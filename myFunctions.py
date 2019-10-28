@@ -6,13 +6,15 @@ import pandas as pd
 
 ## Common functions
 '''
+gen_FTN_data v2: added n_sec for different sampling rates
 Input:
      - varNames: a list variable that has all the variable names
      - days: a list variable that lists out the days
+     - n_sec: one sample per n_sec seconds
 Output:
      - FTN: a dictionary with variable names as keys, and a TN format DataFrame as values
 '''
-def gen_FTN_data(varNames,days,filePath,fileNames):
+def gen_FTN_data(varNames,days,filePath,fileNames,n_sec=10):
     F = len(varNames)
     N = len(days)
     # initialize output FTN dictionary with variable names as keys and empty lists as values
@@ -26,7 +28,8 @@ def gen_FTN_data(varNames,days,filePath,fileNames):
         # get the columns we want
         df = data[varNames]
         # time increments/intervals may not be fixed, mark the indices
-        indices = data.time.round(-1).drop_duplicates().index
+        # indices = data.time.round(-1).drop_duplicates().index
+        indices = (data.time/n_sec).round(0).drop_duplicates().index
         # T = len(indices)
         df = df.iloc[indices]
         
@@ -43,6 +46,45 @@ def gen_FTN_data(varNames,days,filePath,fileNames):
         FTN[key] = pd.DataFrame(FTN[key],columns = cols) # make data frame
     print('Done!')
     return(FTN)
+
+# '''
+# Input:
+#      - varNames: a list variable that has all the variable names
+#      - days: a list variable that lists out the days
+# Output:
+#      - FTN: a dictionary with variable names as keys, and a TN format DataFrame as values
+# '''
+# def gen_FTN_data(varNames,days,filePath,fileNames):
+#     F = len(varNames)
+#     N = len(days)
+#     # initialize output FTN dictionary with variable names as keys and empty lists as values
+#     FTN = dict([(i,[]) for i in varNames])
+#     
+#     for day in days:
+#         # read data from disk
+#         file = filePath + '\\' + fileNames[day]
+#         data = pd.read_csv(file) # TF format
+#         
+#         # get the columns we want
+#         df = data[varNames]
+#         # time increments/intervals may not be fixed, mark the indices
+#         indices = data.time.round(-1).drop_duplicates().index
+#         # T = len(indices)
+#         df = df.iloc[indices]
+#         
+#         # append TS to list(NT format for now)
+#         for i in varNames:
+#             FTN[i].append(df[i])
+#         
+#         print('Finished with day {}'.format(day))    
+#     
+#     print('Preparing for data output')
+#     for key in FTN:
+#         FTN[key] = np.array(FTN[key]).T # tranpose from NT to TN format
+#         cols = ['day{}'.format(d) for d in days] # add column names
+#         FTN[key] = pd.DataFrame(FTN[key],columns = cols) # make data frame
+#     print('Done!')
+#     return(FTN)
 
 '''    
 # This function is to transform the data format from NTF to FNT
@@ -186,23 +228,89 @@ def gen_large_dist_mat(X,filePath,dset,dist_func=None,print_ = False):
     return(None)
 
 
-'''
-inputs:
-    D: distance matrix(N by N)
-    k: k-th neighbor distance
-'''
-def k_dist(D,k = 4):
+
+def parse_pivot_from_file(file,data_row,data_col, mode = 0):
+    '''
+    inputs:
+        file: file location path
+        data_row: data content starting row
+        data_col: data content starting column
+        mode: the format of pivot table in file,
+              if column names are stacked at the end of index(row) names, use mode = 0(default)
+              if column names are stacked at the start of index(row) names, use mode = 1
+              For pandas saved pivot_table in csv files, use mode = 0
+    outputs:
+        df_load: recovered pivot table loaded from file
+    '''
     import numpy as np
-    D = np.array(D)
-    N = D.shape[0]
-    # initialize k_dist vector
-    k_dist = np.zeros((N,1))
-    for i in range(N):
-        row = list(D[i,:])
-        for j in range(k): # remove min(row) k times, not k-1 times, because closest is always itself!
-            row.remove(min(row))
-        k_dist[i] = min(row)
-    return(k_dist)
+    import pandas as pd
+    
+    y_e = data_row - 1  # ending col name position
+    x_e = data_col - 1  # ending row name position
+    
+    df = pd.read_csv(file,header = None) 
+    
+    # reconstruct pivot table from csv file:
+    arr = np.array(df)
+    data_arr = arr[data_row:,data_col:] # data content values
+
+    # multi index rows
+    # locate row names
+    for x_s in range(x_e,-1,-1):
+        if str(arr[y_e,x_s]) == '' or str(arr[y_e,x_s]) == 'nan':
+            x_s += x_s
+            break
+    row_names = arr[y_e,x_s:x_e+1]
+    
+    # generate levels
+    multirow_shape = (arr.shape[0] - data_row,len(row_names))
+    mirow_arr = np.empty(multirow_shape,dtype=np.object)
+    
+    for col,row_name in enumerate(row_names):
+        row = [x for x in arr[data_row:,col] if not (str(x)=='' or str(x)=='nan')]
+        n = int(multirow_shape[0]/len(row))
+        
+        for i in range(len(row)):
+            s = i*n
+            e = s + n
+            mirow_arr[s:e,col] = np.array([row[i] for x in range(n)])
+    
+    miindex = pd.MultiIndex.from_arrays(mirow_arr.T ,names=row_names) 
+
+
+    # multi index columns
+    # locate col names
+    x_loc = x_s if mode==0 else x_e # mode
+    for y_s in range(y_e,-1,-1):
+        if str(arr[y_s,x_loc]) == '' or str(arr[y_s,x_loc]) == 'nan':
+            y_s += y_s
+            break
+    col_names = arr[y_s:y_e,x_loc]
+    
+    # generate levels
+    multicol_shape = (len(col_names),arr.shape[1] - data_col)
+    micol_arr = np.empty(multicol_shape,dtype=np.object)
+    
+    for row,col_name in enumerate(col_names):
+        col = [x for x in arr[row,data_col:] if not (str(x)=='' or str(x)=='nan')]
+        n = int(multicol_shape[1]/len(col))
+        
+        for i in range(len(col)):
+            s = i*n
+            e = s + n
+            micol_arr[row,s:e] = np.array([col[i] for x in range(n)])
+            
+    micolumns = pd.MultiIndex.from_arrays(micol_arr,names=col_names)   
+        
+    # cols_names = list(arr[:data_row-1,data_col-1])
+    # row_names = arr[data_row:,col_e]
+    
+    # recovered data frame
+    df_load = pd.DataFrame(data_arr,index = miindex,columns=micolumns)
+    # df_load = pd.DataFrame(data_arr,index = row_names,columns=micolumns)
+    # df_load.index.name = arr[data_row-1,data_col-1]
+    
+    return(df_load)
 
 
 
